@@ -1,0 +1,103 @@
+#!/bin/bash
+
+
+#mysql query degiskene atarken anlik calistirmak icin.
+syncstatus () {
+
+
+syncecho=$(echo "select VARIABLE_VALUE from information_schema.GLOBAL_STATUS where VARIABLE_NAME = 'WSREP_LOCAL_STATE_COMMENT';" | mysql -u root -s)
+
+
+}
+
+
+#Gelera node'nun sync durumu. "Synced" olmalı.
+syncstatus=$(mysql -u root -se "select VARIABLE_VALUE from information_schema.GLOBAL_STATUS where VARIABLE_NAME = 'WSREP_LOCAL_STATE_COMMENT';")
+
+
+#Galera nodunun cluster'a bagli olup olmadının kontrolu."ON" olmalı
+wsrepstatus=$(mysql -u root -se "select VARIABLE_VALUE from information_schema.GLOBAL_STATUS where VARIABLE_NAME = 'wsrep_connected';")
+
+
+#Galera clusterdaki node sayisi . Butun nodelarin aktif oldugunu bekliyoruz. Bizim icin 3 dönmeli.
+clustersize=$(mysql -u root -se "select VARIABLE_VALUE from information_schema.GLOBAL_STATUS where VARIABLE_NAME = 'wsrep_cluster_size';")
+
+
+#Tarih Formatı
+date=$(date +%Y-%m-%d-%H-%M)
+
+
+#Yedek hedef dosya
+backupfile="/var/glrbckp/backups/alldatabases-$date.gz"
+
+
+if [ "$syncstatus" = "Synced" -a "$wsrepstatus" = "ON" ]; then
+    #log dosyasi temizlenir
+    echo > /opt/glrbckp/scripts/status.txt
+
+
+    #Sync kapatılır
+    mysql -u root -se "SET GLOBAL wsrep_desync = ON" 
+    sleep 1 
+    syncstatus
+    echo "$date sync kapatıldı. WSREP_LOCAL_STATE_COMMENT = $syncecho" >> /opt/glrbckp/scripts/status.txt
+
+
+    sleep 1
+
+
+    #Yedek Baslar 
+    mysqldump -u root --flush-logs --all-databases | gzip > /var/glrbckp/backups/alldatabases-$date.gz
+    sleep 2
+
+
+        if [ -f "$backupfile" ]; then
+
+
+             echo yedekleme basarili.
+             
+              #durum log
+             syncstatus
+                 echo "$date yedekleme basarili. WSREP_LOCAL_STATE_COMMENT = $syncecho wsrep_connected = $wsrepstatus wsrep_cluster_size = $clustersize" >> /opt/glrbckp/scripts/status.txt
+             
+             #Sync aktif edilir
+             mysql -u root -se "SET GLOBAL wsrep_desync = OFF"
+             sleep 5
+
+
+                      #durum log
+                 syncstatus
+             echo "$date sync aktif edildi WSREP_LOCAL_STATE_COMMENT = $syncecho" >> /opt/glrbckp/scripts/status.txt
+
+
+
+
+              #belirtilen süreden eski yedekler silinir. mmin dakika.
+             find /var/glrbckp/backups/ -maxdepth 1 -mmin +120 -type f -exec rm {} \;
+             echo "$date eski yedekler silindi" >> /opt/glrbckp/scripts/status.txt
+          else
+
+
+                         #yedek dosyasi bulunamazsa, sync tekrar aktif edilir. Devam edilmez.
+                     echo "$date $backupfile mevcut değil. dump esnasında sorun oldu" >> /opt/glrbckp/scripts/status.txt
+             
+             #sync tekrar aktif edilir
+             mysql -u root -se "SET GLOBAL wsrep_desync = OFF"
+             syncstatus
+             echo "$date Sync tekrar aktif edildi. WSREP_LOCAL_STATE_COMMENT = $syncecho"
+
+
+             #durum log
+             echo "$date yedekleme basarisiz. WSREP_LOCAL_STATE_COMMENT = $syncecho wsrep_connected = $wsrepstatus wsrep_cluster_size = $clustersize" >> /opt/glrbckp/scripts/status.txt
+             exit 1
+        fi
+
+
+       else
+        echo "Hata var.Yedekleme baslayamadi."
+        #durum log
+        syncstatus
+                echo "$date yedekleme baslayamadi. $date WSREP_LOCAL_STATE_COMMENT = $syncecho wsrep_connected = $wsrepstatus wsrep_cluster_size = $clustersize" >> /opt/glrbckp/scripts/status.txt
+
+
+fi
